@@ -89,7 +89,7 @@ public class main {
 		} catch (IOException e) {
 			e.printStackTrace();
 		}
-		
+		parseDNSResponse(receiveData);
 		String response = new String(receivePacket.getData());
 		System.out.println(String.format("From server: %s", response));
 		clientSocket.close();
@@ -122,7 +122,7 @@ public class main {
 		//QUESTION SECTION
 		ArrayList<Byte> question = new ArrayList<Byte>();
 		//QNAME
-		String[] labels = name.split("//.");
+		String[] labels = name.split("\\.");
 		for (int i = 0; i < labels.length; i++) {
 			String label = labels[i];
 			question.add((byte) label.length());
@@ -152,5 +152,26 @@ public class main {
 		}
 		return bytes;
 
+	}
+	
+	private static void parseDNSResponse(byte[] response) {
+		int AA = response[2] & 0x4;
+		int RA = response[3] & 0x80;
+		int RCODE = response[3] & 0xF;
+		int ANCOUNT = response[6] << 8 + response[7];
+		int ARCOUNT = response[10] << 8 + response[11];
+		boolean authoritative = AA == 0 ? false : true;
+		boolean recursionSupported = RA == 0 ? false : true;
+		if (RCODE == 1) {
+			System.out.println(String.format("ERROR [RCODE: %d] Format error", RCODE));
+		} else if (RCODE == 2) {
+			System.out.println(String.format("ERROR	[RCODE: %d] Server failure", RCODE));
+		} else if (RCODE == 3 && authoritative) {
+			System.out.println(String.format("ERROR	[RCODE: %d] Name error", RCODE));
+		} else if (RCODE == 4) {
+			System.out.println(String.format("ERROR	[RCODE: %d] Not implemented error", RCODE));
+		} else if (RCODE == 5) {
+			System.out.println(String.format("ERROR	[RCODE: %d] Refused", RCODE));
+		}
 	}
 }
