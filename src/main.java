@@ -1,13 +1,15 @@
 import java.io.IOException;
+import java.io.UnsupportedEncodingException;
 import java.net.*;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Optional;
 //can only use InetAddress.geyByAddress
 public class main {
 
 	enum QueryType {
-		A((byte) 0x1), NS((byte) 0x2), MX((byte) 0xf);
+		A((byte) 0x1), NS((byte) 0x2), CNAME((byte) 0x5), MX((byte) 0xf);
 		
 		QueryType(byte code) {
 			this.code = code;
@@ -16,7 +18,9 @@ public class main {
 		private byte getCode() {
 			return code;
 		}
-		
+		public static Optional<QueryType> valueOf(byte code) {
+			return Arrays.stream(values()).filter(q -> q.code == code).findFirst();
+		}
 	}
 	private static String USAGE_STRING = "java DnsClient [-t timeout] [-r max-retries] [-p port][-mx|-ns] @server name";
 	public static void main(String[] args) {
@@ -158,8 +162,8 @@ public class main {
 		int AA = response[2] & 0x4;
 		int RA = response[3] & 0x80;
 		int RCODE = response[3] & 0xF;
-		int ANCOUNT = response[6] << 8 + response[7];
-		int ARCOUNT = response[10] << 8 + response[11];
+		int ANCOUNT = (response[6] << 8) + response[7];
+		int ARCOUNT = (response[10] << 8) + response[11];
 		boolean authoritative = AA == 0 ? false : true;
 		boolean recursionSupported = RA == 0 ? false : true;
 		if (RCODE == 1) {
@@ -173,5 +177,74 @@ public class main {
 		} else if (RCODE == 5) {
 			System.out.println(String.format("ERROR	[RCODE: %d] Refused", RCODE));
 		}
+		//Start of question section is response[12];
+		int i = 12;
+		//NAME
+		ArrayList<String> labels = new ArrayList<String>();
+		while (response[i] != 0x0) {
+				int labelLength = response[i];
+				i++;
+				
+				//byteArray is from i to i+labelLength
+				byte[] byteArray = Arrays.copyOfRange(response, i, i+labelLength);
+				try {
+					labels.add(new String(byteArray, "UTF-8"));
+				} catch (UnsupportedEncodingException e) {
+					e.printStackTrace();
+				}
+				
+				i += labelLength;
+		}
+		String questionName = String.join(".", labels);
+		i += 5; //skip the question type, and question class
+		
+		//ANSWER section starts here
+		String name = null;
+		boolean isPointer = ((int) response[i] & 0b11000000) == 192;
+		if (isPointer) {
+			int pointer = (((int) response[i] & 0b00111111) << 8) + response[++i];
+			int startIndex = pointer - 12;
+			name = questionName.substring(startIndex, questionName.length());
+		}
+		i += 2;
+		
+		//QTYPE
+		QueryType qType = QueryType.valueOf(response[i]).get();
+		i++;
+		//CLASS
+		int qClass = (response[i] << 8) + response[++i];
+		if (qClass != 1) {
+			System.out.println("ERROR Answer class is not 1.");
+			return;
+		}
+		i++;
+		//TTL
+		//eg 1100 0000, 0000 1100, 0000 0000, 0000 0001
+		int ttl = (response[i] << 24) + (response[++i] << 16) + (response[++i] << 8) + response[++i];
+		i++;
+		//RDLENGTH
+		int rdLength = (response[i] << 8) + response[++i];
+		i++;
+		//RDATA (of length rdLength)
+		switch(qType) {
+			case A:
+				//IP address
+				byte[] ipBytes = Arrays.copyOfRange(response, i, i+rdLength);
+				ArrayList<String> ipParts = new ArrayList<String>();
+				for (int j=0; j < rdLength; j++) {
+					ipParts.add(Byte.toUnsignedInt(ipBytes[j]) + "");
+				}
+				String ipAddress = String.join(".", ipParts);
+				break;
+			case CNAME:
+				break;
+			case MX:
+				break;
+			case NS:
+				break;
+			default:
+				break;
+		}
+		
 	}
 }
