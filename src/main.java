@@ -5,8 +5,12 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Optional;
+
+import javafx.util.Pair;
 //can only use InetAddress.geyByAddress
 public class main {
+
+	private static final int HEADER_BYTE_LENGTH = 12;
 
 	enum QueryType {
 		A((byte) 0x1), NS((byte) 0x2), CNAME((byte) 0x5), MX((byte) 0xf);
@@ -79,6 +83,7 @@ public class main {
 		DatagramSocket clientSocket = null;
 		try {
 			clientSocket = new DatagramSocket();
+			clientSocket.setSoTimeout(timeout * 1000);
 		} catch (SocketException e1) {
 			e1.printStackTrace();
 		}
@@ -87,22 +92,31 @@ public class main {
 		DatagramPacket sendPacket = new DatagramPacket(sendData, sendData.length, dnsServer, port);
 		DatagramPacket receivePacket = new DatagramPacket(receiveData, receiveData.length);
 		
-		try {
-			clientSocket.send(sendPacket);
-			clientSocket.receive(receivePacket);
-		} catch (IOException e) {
-			e.printStackTrace();
+		int retries = 0;
+		boolean done = false;
+		long startTime = System.currentTimeMillis();
+		while (!done && retries < maxRetries) {
+			try {
+				clientSocket.send(sendPacket);
+				clientSocket.receive(receivePacket);
+				done = true;
+			} catch (Exception e) {
+				retries++;
+			}
 		}
+		if (!done) {
+			//exceeded max-retries	
+			System.out.println(String.format("No response received after %d retries", maxRetries));
+		}
+		long endTime = System.currentTimeMillis();
+		System.out.println(String.format("Response received after %d seconds (%d retries)", (endTime-startTime)/1000L, retries));
+		
 		parseDNSResponse(receiveData);
-		String response = new String(receivePacket.getData());
-		System.out.println(String.format("From server: %s", response));
 		clientSocket.close();
-		
-		
 	}
 	
 	private static byte[] composeDNSQuery(String name, QueryType queryType) {
-		Byte[] header = new Byte[12];
+		Byte[] header = new Byte[HEADER_BYTE_LENGTH];
 		//ID
 		int id = (int) (Math.random() * 65536);
 		header[0] = (byte) id;
@@ -163,88 +177,144 @@ public class main {
 		int RA = response[3] & 0x80;
 		int RCODE = response[3] & 0xF;
 		int ANCOUNT = (response[6] << 8) + response[7];
+		int NSCOUNT = (response[8] << 8) + response[9];
 		int ARCOUNT = (response[10] << 8) + response[11];
 		boolean authoritative = AA == 0 ? false : true;
 		boolean recursionSupported = RA == 0 ? false : true;
+		if (!recursionSupported) {
+			System.out.println("ERROR\tRecursive queries are not supported");
+		}
 		if (RCODE == 1) {
-			System.out.println(String.format("ERROR [RCODE: %d] Format error", RCODE));
+			System.out.println(String.format("ERROR\t[RCODE: %d] Format error", RCODE));
 		} else if (RCODE == 2) {
-			System.out.println(String.format("ERROR	[RCODE: %d] Server failure", RCODE));
+			System.out.println(String.format("ERROR\t[RCODE: %d] Server failure", RCODE));
 		} else if (RCODE == 3 && authoritative) {
-			System.out.println(String.format("ERROR	[RCODE: %d] Name error", RCODE));
+			System.out.println(String.format("NOT FOUND\t[RCODE: %d] Domain name does not exist", RCODE));
 		} else if (RCODE == 4) {
-			System.out.println(String.format("ERROR	[RCODE: %d] Not implemented error", RCODE));
+			System.out.println(String.format("ERROR\t[RCODE: %d] Not implemented error", RCODE));
 		} else if (RCODE == 5) {
-			System.out.println(String.format("ERROR	[RCODE: %d] Refused", RCODE));
+			System.out.println(String.format("ERROR\t[RCODE: %d] Refused", RCODE));
 		}
 		//Start of question section is response[12];
-		int i = 12;
+		int i = HEADER_BYTE_LENGTH;
 		//NAME
+		Pair<String, Integer> nameIndexPair = parseName(response, i);
+		String questionName = nameIndexPair.getKey();
+		i = nameIndexPair.getValue();
+		i += 4; //skip the question type, and question class
+		
+		//ANSWER section starts here
+		if (ANCOUNT > 0) {
+			System.out.println(String.format("***Answer Section (%d records)***", ANCOUNT));
+		}
+		for (int j = 0; j < ANCOUNT; j++) {
+			i = parseAnswer(response, i, questionName, authoritative, false);
+		}
+		if (NSCOUNT > 0) {
+			System.out.println(String.format("***Authority Section (%d records)***", NSCOUNT));
+		}
+		for (int j = 0; j < NSCOUNT; j++) {
+			//skip authority section
+			i = parseAnswer(response, i, questionName, authoritative, true);
+		}
+		if (ARCOUNT > 0) {
+			System.out.println(String.format("***Additional Section (%d records)***", ARCOUNT));
+		}
+		for (int j = 0; j < ARCOUNT; j++) {
+			//skip authority section
+			i = parseAnswer(response, i, questionName, authoritative, false);
+		}
+	}
+	
+	private static Pair<String, Integer> parseName(byte[] byteArray, int i) {
 		ArrayList<String> labels = new ArrayList<String>();
-		while (response[i] != 0x0) {
-				int labelLength = response[i];
+		while (byteArray[i] != 0x0) {
+				int labelLength = byteArray[i];
 				i++;
 				
 				//byteArray is from i to i+labelLength
-				byte[] byteArray = Arrays.copyOfRange(response, i, i+labelLength);
+				byte[] labelBytes = Arrays.copyOfRange(byteArray, i, i+labelLength);
 				try {
-					labels.add(new String(byteArray, "UTF-8"));
+					labels.add(new String(labelBytes, "UTF-8"));
 				} catch (UnsupportedEncodingException e) {
 					e.printStackTrace();
 				}
 				
 				i += labelLength;
 		}
-		String questionName = String.join(".", labels);
-		i += 5; //skip the question type, and question class
-		
-		//ANSWER section starts here
+		i++;
+		String name = String.join(".", labels);
+		return new Pair<>(name, i);
+	}
+	
+	private static int parseAnswer(byte[] byteArray, int i, String qName, boolean authoritative, boolean isAuthoritySection) {
 		String name = null;
-		boolean isPointer = ((int) response[i] & 0b11000000) == 192;
+		boolean isPointer = ((int) byteArray[i] & 0b11000000) == 192;
 		if (isPointer) {
-			int pointer = (((int) response[i] & 0b00111111) << 8) + response[++i];
-			int startIndex = pointer - 12;
-			name = questionName.substring(startIndex, questionName.length());
+			int pointer = (((int) byteArray[i] & 0b00111111) << 8) + byteArray[++i];
+			int startIndex = pointer - HEADER_BYTE_LENGTH;
+			name = qName.substring(startIndex, qName.length());
+		} else {
+			Pair<String, Integer> nameIndexPair = parseName(byteArray, i);
+			i = nameIndexPair.getValue();
+			name = nameIndexPair.getKey();
 		}
 		i += 2;
 		
-		//QTYPE
-		QueryType qType = QueryType.valueOf(response[i]).get();
-		i++;
-		//CLASS
-		int qClass = (response[i] << 8) + response[++i];
-		if (qClass != 1) {
-			System.out.println("ERROR Answer class is not 1.");
-			return;
-		}
-		i++;
-		//TTL
-		//eg 1100 0000, 0000 1100, 0000 0000, 0000 0001
-		int ttl = (response[i] << 24) + (response[++i] << 16) + (response[++i] << 8) + response[++i];
-		i++;
-		//RDLENGTH
-		int rdLength = (response[i] << 8) + response[++i];
-		i++;
-		//RDATA (of length rdLength)
-		switch(qType) {
-			case A:
-				//IP address
-				byte[] ipBytes = Arrays.copyOfRange(response, i, i+rdLength);
-				ArrayList<String> ipParts = new ArrayList<String>();
-				for (int j=0; j < rdLength; j++) {
-					ipParts.add(Byte.toUnsignedInt(ipBytes[j]) + "");
-				}
-				String ipAddress = String.join(".", ipParts);
-				break;
-			case CNAME:
-				break;
-			case MX:
-				break;
-			case NS:
-				break;
-			default:
-				break;
+		QueryType qType = null;
+		if(isAuthoritySection) {
+			//skip QTYPE and CLASS section
+			i += 3;
+		} else {
+			//QTYPE
+			qType = QueryType.valueOf(byteArray[i++]).get();
+			//CLASS
+			int qClass = (byteArray[i] << 8) + byteArray[++i];
+			if (qClass != 1) {
+				System.out.println("ERROR Answer class is not 1.");
+			}
+			i++;
 		}
 		
+		//TTL - masking to make it unsigned
+		long ttl = ((byteArray[i] << 24) + (byteArray[++i] << 16) + (byteArray[++i] << 8) + byteArray[++i]) & 0xffffffffL;
+		i++;
+		//RDLENGTH
+		int rdLength = (byteArray[i] << 8) + byteArray[++i];
+		if (rdLength == 0) {
+			return i;
+		}
+		
+		i++;
+		//RDATA (of length rdLength)
+		String auth = authoritative ? "auth" : "noauth";
+		if (!isAuthoritySection) {
+			switch(qType) {
+				case A:
+					//IP address
+					byte[] ipBytes = Arrays.copyOfRange(byteArray, i, i+rdLength);
+					ArrayList<String> ipParts = new ArrayList<String>();
+					for (int j=0; j < rdLength; j++) {
+						ipParts.add(Byte.toUnsignedInt(ipBytes[j]) + "");
+					}
+					String ipAddress = String.join(".", ipParts);
+					System.out.println(String.format("IP \t %s \t %d \t %s", ipAddress, ttl, auth));
+					break;
+				case CNAME:
+					System.out.println(String.format("CNAME \t [alias] \t %d \t %s", ttl, auth));
+					break;
+				case MX:
+					System.out.println(String.format("MX \t [alias] \t [pref] \t %d \t %s", ttl, auth));
+					break;
+				case NS:
+					System.out.println(String.format("NS \t [alias] \t %d \t %s", ttl, auth));
+					break;
+				default:
+					break;
+			}
+		}
+		i += rdLength;
+		//return start of the next answer
+		return i;
 	}
 }
