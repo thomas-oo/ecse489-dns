@@ -326,8 +326,10 @@ public class DnsClient {
 					break;
 				}
 				case MX: {
+					//next 2 bytes are preference
+					long preference = (byteArray[i++] << 8) + byteArray[i++];
 					Pair<String,Integer> aliasIndexPair = parsePointerOrName(byteArray, i, qName);
-					System.out.println(String.format("MX \t %s \t [pref] \t %d \t %s", aliasIndexPair.getKey(), ttl, auth));
+					System.out.println(String.format("MX \t %s \t %d \t %d \t %s", aliasIndexPair.getKey(), preference, ttl, auth));
 					i = aliasIndexPair.getValue();
 					break;
 				}
