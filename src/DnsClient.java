@@ -8,8 +8,10 @@ import java.util.Optional;
 
 import javafx.util.Pair;
 //can only use InetAddress.geyByAddress
-public class main {
+public class DnsClient {
 
+	private static final String AUTH = "auth";
+	private static final String NOAUTH = "noauth";
 	private static final int HEADER_BYTE_LENGTH = 12;
 
 	enum QueryType {
@@ -226,6 +228,22 @@ public class main {
 		}
 	}
 	
+	private static Pair<String, Integer> parsePointerOrName(byte[] byteArray, int i, String qName) {
+		String name;
+		boolean isPointer = ((int) byteArray[i] & 0b11000000) == 192;
+		if (isPointer) {
+			int pointer = (((int) byteArray[i] & 0b00111111) << 8) + byteArray[++i];
+			int startIndex = pointer - HEADER_BYTE_LENGTH;
+			name = qName.substring(startIndex, qName.length());
+		} else {
+			Pair<String, Integer> nameIndexPair = parseName(byteArray, i);
+			i = nameIndexPair.getValue();
+			name = nameIndexPair.getKey();
+		}
+		i += 2;
+		return new Pair<String, Integer>(name, i);
+	}
+	
 	private static Pair<String, Integer> parseName(byte[] byteArray, int i) {
 		ArrayList<String> labels = new ArrayList<String>();
 		while (byteArray[i] != 0x0) {
@@ -287,10 +305,10 @@ public class main {
 		
 		i++;
 		//RDATA (of length rdLength)
-		String auth = authoritative ? "auth" : "noauth";
+		String auth = authoritative ? AUTH : NOAUTH;
 		if (!isAuthoritySection) {
 			switch(qType) {
-				case A:
+				case A: {
 					//IP address
 					byte[] ipBytes = Arrays.copyOfRange(byteArray, i, i+rdLength);
 					ArrayList<String> ipParts = new ArrayList<String>();
@@ -300,17 +318,25 @@ public class main {
 					String ipAddress = String.join(".", ipParts);
 					System.out.println(String.format("IP \t %s \t %d \t %s", ipAddress, ttl, auth));
 					break;
-				case CNAME:
-					System.out.println(String.format("CNAME \t [alias] \t %d \t %s", ttl, auth));
+				}
+				case CNAME: {
+					Pair<String,Integer> aliasIndexPair = parsePointerOrName(byteArray, i, qName);
+					System.out.println(String.format("CNAME \t %s \t %d \t %s", aliasIndexPair.getKey(), ttl, auth));
+					i = aliasIndexPair.getValue();
 					break;
-				case MX:
-					System.out.println(String.format("MX \t [alias] \t [pref] \t %d \t %s", ttl, auth));
+				}
+				case MX: {
+					Pair<String,Integer> aliasIndexPair = parsePointerOrName(byteArray, i, qName);
+					System.out.println(String.format("MX \t %s \t [pref] \t %d \t %s", aliasIndexPair.getKey(), ttl, auth));
+					i = aliasIndexPair.getValue();
 					break;
-				case NS:
-					System.out.println(String.format("NS \t [alias] \t %d \t %s", ttl, auth));
+				}
+				case NS: {
+					Pair<String,Integer> aliasIndexPair = parsePointerOrName(byteArray, i, qName);
+					System.out.println(String.format("NS \t %s \t %d \t %s", aliasIndexPair.getKey(), ttl, auth));
+					i = aliasIndexPair.getValue();
 					break;
-				default:
-					break;
+				}
 			}
 		}
 		i += rdLength;
