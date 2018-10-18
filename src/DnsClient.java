@@ -34,7 +34,6 @@ public class DnsClient {
 			System.out.println(String.format("Usage: %s", USAGE_STRING));
 			return;
 		}
-		// TODO Auto-generated method stub
 		int timeout = 5;
 		int maxRetries = 3;
 		int port = 53;
@@ -240,14 +239,23 @@ public class DnsClient {
 			i = nameIndexPair.getValue();
 			name = nameIndexPair.getKey();
 		}
-		i += 2;
 		return new Pair<String, Integer>(name, i);
 	}
 	
 	private static Pair<String, Integer> parseName(byte[] byteArray, int i) {
 		ArrayList<String> labels = new ArrayList<String>();
+		boolean requestIsPointer = ((int) byteArray[i] & 0b11000000) == 192;
 		while (byteArray[i] != 0x0) {
 				int labelLength = byteArray[i];
+				boolean isPointer = ((int) byteArray[i] & 0b11000000) == 192;
+				if (isPointer) {
+					int pointer = (((int) byteArray[i] & 0b00111111) << 8) + (byteArray[++i] & 0b11111111);
+					Pair<String, Integer> nameIndexPair = parseName(byteArray, pointer);
+					labels.add(nameIndexPair.getKey());
+					i++;
+					continue;
+				}
+				
 				i++;
 				
 				//byteArray is from i to i+labelLength
@@ -260,7 +268,9 @@ public class DnsClient {
 				
 				i += labelLength;
 		}
-		i++;
+		if (!requestIsPointer) {
+			i++;
+		}
 		String name = String.join(".", labels);
 		return new Pair<>(name, i);
 	}
@@ -269,9 +279,9 @@ public class DnsClient {
 		String name = null;
 		boolean isPointer = ((int) byteArray[i] & 0b11000000) == 192;
 		if (isPointer) {
-			int pointer = (((int) byteArray[i] & 0b00111111) << 8) + byteArray[++i];
-			int startIndex = pointer - HEADER_BYTE_LENGTH;
-			name = qName.substring(startIndex, qName.length());
+			Pair<String, Integer> nameIndexPair = parseName(byteArray, i);
+			i++;
+			name = nameIndexPair.getKey();
 		} else {
 			Pair<String, Integer> nameIndexPair = parseName(byteArray, i);
 			i = nameIndexPair.getValue();
@@ -306,7 +316,9 @@ public class DnsClient {
 		i++;
 		//RDATA (of length rdLength)
 		String auth = authoritative ? AUTH : NOAUTH;
-		if (!isAuthoritySection) {
+		if (isAuthoritySection) {
+			i += rdLength;
+		} else {
 			switch(qType) {
 				case A: {
 					//IP address
@@ -317,6 +329,7 @@ public class DnsClient {
 					}
 					String ipAddress = String.join(".", ipParts);
 					System.out.println(String.format("IP \t %s \t %d \t %s", ipAddress, ttl, auth));
+					i += rdLength;
 					break;
 				}
 				case CNAME: {
@@ -341,7 +354,6 @@ public class DnsClient {
 				}
 			}
 		}
-		i += rdLength;
 		//return start of the next answer
 		return i;
 	}
