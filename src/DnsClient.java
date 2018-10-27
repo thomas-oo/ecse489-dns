@@ -14,6 +14,7 @@ public class DnsClient {
 	private static final String NOAUTH = "noauth";
 	private static final int HEADER_BYTE_LENGTH = 12;
 
+	//an enum representing the supported query types
 	enum QueryType {
 		A((byte) 0x1), NS((byte) 0x2), CNAME((byte) 0x5), MX((byte) 0xf);
 		
@@ -29,6 +30,8 @@ public class DnsClient {
 		}
 	}
 	private static String USAGE_STRING = "java DnsClient [-t timeout] [-r max-retries] [-p port][-mx|-ns] @server name";
+
+	
 	public static void main(String[] args) {
 		if (args.length < 2) {
 			System.out.println(String.format("Usage: %s", USAGE_STRING));
@@ -116,6 +119,9 @@ public class DnsClient {
 		clientSocket.close();
 	}
 	
+	//Composes the byte array that represents the DNS query
+	//Takes in a domain name to query for, and the a queryType
+	//Returns the representative byte array for the DNS query
 	private static byte[] composeDNSQuery(String name, QueryType queryType) {
 		Byte[] header = new Byte[HEADER_BYTE_LENGTH];
 		//ID
@@ -173,6 +179,7 @@ public class DnsClient {
 
 	}
 	
+	//Parses the question header, as well as the Answer and Additional section records
 	private static void parseDNSResponse(byte[] response) {
 		int AA = response[2] & 0x4;
 		int RA = response[3] & 0x80;
@@ -222,11 +229,13 @@ public class DnsClient {
 			System.out.println(String.format("***Additional Section (%d records)***", ARCOUNT));
 		}
 		for (int j = 0; j < ARCOUNT; j++) {
-			//skip authority section
 			i = parseAnswer(response, i, questionName, authoritative, false);
 		}
 	}
 	
+	//Takes in a byte array and a starting index, and a qName to which pointers encountered will be substrings of
+	//Calls parseName in the case that the index is not a pointer
+	//Returns a domain name and starting index of the next section
 	private static Pair<String, Integer> parsePointerOrName(byte[] byteArray, int i, String qName) {
 		String name;
 		boolean isPointer = ((int) byteArray[i] & 0b11000000) == 192;
@@ -242,6 +251,10 @@ public class DnsClient {
 		return new Pair<String, Integer>(name, i);
 	}
 	
+	//Parses names and pointers until a 0 byte is encountered.
+	//Takes in a byte array and a starting index.
+	//Pointers can be encoountered anywhere in the name to which this method will call itself with the appopriate index
+	//Returns a period seperated domain name and starting index of the next section
 	private static Pair<String, Integer> parseName(byte[] byteArray, int i) {
 		ArrayList<String> labels = new ArrayList<String>();
 		boolean requestIsPointer = ((int) byteArray[i] & 0b11000000) == 192;
@@ -275,6 +288,9 @@ public class DnsClient {
 		return new Pair<>(name, i);
 	}
 	
+	//Parses a resource record. Takes in the bytearray, the starting index of the resource record, booleans to signal if its authoritative
+	//ignores reading the data section if it is an authority record
+	//Returns the starting index of the next section
 	private static int parseAnswer(byte[] byteArray, int i, String qName, boolean authoritative, boolean isAuthoritySection) {
 		String name = null;
 		boolean isPointer = ((int) byteArray[i] & 0b11000000) == 192;
